@@ -1,0 +1,11 @@
+# 校招 Copilot —— 依赖列表
+# 安装： pip install -r requirements.txt
+
+streamlit>=1.40.0      # Web UI 框架（自带 st.chat_message / st.chat_input 聊天组件）
+openai>=1.0.0          # 用于调用 DeepSeek（DeepSeek 提供 OpenAI 兼容接口）
+python-dotenv>=1.0.1   # 从 .env 读取 API key
+pandas>=2.2.0          # 可选：数据处理 / 历史记录导出
+pypdf>=3.0.0           # 简历解析：提取 PDF 文本
+python-docx>=1.0.0     # 简历解析：提取 DOCX 文本
+
+# 注：sqlite3 是 Python 标准库内置模块，无需安装、无需写进本文件。
