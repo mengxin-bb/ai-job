@@ -91,9 +91,21 @@ def init_db() -> None:
                 company         TEXT NOT NULL,
                 position        TEXT,
                 interview_time  TEXT,      -- 面试时间（自由文本，如「3月15日 14:00」）
+                interview_date  TEXT,      -- 标准日期（YYYY-MM-DD），用于日历看板
+                interview_clock TEXT,      -- 标准时间（HH:MM），用于日历看板
                 method          TEXT,      -- 线上 / 现场 / 电话
                 note            TEXT,
                 created_at      TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS chat_archives (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id       INTEGER NOT NULL,
+                folder        TEXT NOT NULL,
+                title         TEXT,
+                content       TEXT NOT NULL,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
             );
             """
@@ -108,6 +120,14 @@ def init_db() -> None:
             conn.execute("ALTER TABLE users ADD COLUMN school TEXT")
         if "target_city" not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN target_city TEXT")
+        interview_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(interviews)").fetchall()
+        }
+        if "interview_date" not in interview_columns:
+            conn.execute("ALTER TABLE interviews ADD COLUMN interview_date TEXT")
+        if "interview_clock" not in interview_columns:
+            conn.execute("ALTER TABLE interviews ADD COLUMN interview_clock TEXT")
 
 
 # ---- users -------------------------------------------------------------
@@ -297,14 +317,22 @@ def delete_application(app_id: int) -> None:
 # ---- interviews（面试邀约） -------------------------------------------
 
 def add_interview(
-    user_id: int, company: str, position: str, interview_time: str, method: str, note: str = ""
+    user_id: int,
+    company: str,
+    position: str,
+    interview_time: str,
+    method: str,
+    note: str = "",
+    interview_date: str = "",
+    interview_clock: str = "",
 ) -> None:
     """新增一条面试邀约。"""
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO interviews (user_id, company, position, interview_time, method, note) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (user_id, company, position, interview_time, method, note),
+            "INSERT INTO interviews "
+            "(user_id, company, position, interview_time, interview_date, interview_clock, method, note) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, company, position, interview_time, interview_date, interview_clock, method, note),
         )
 
 
@@ -312,7 +340,9 @@ def get_interviews(user_id: int) -> list[dict]:
     """返回用户的全部面试邀约，最新的在前。"""
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT * FROM interviews WHERE user_id = ? ORDER BY id DESC", (user_id,)
+            "SELECT * FROM interviews WHERE user_id = ? "
+            "ORDER BY COALESCE(interview_date, '') ASC, COALESCE(interview_clock, '') ASC, id DESC",
+            (user_id,),
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -321,3 +351,38 @@ def delete_interview(interview_id: int) -> None:
     """删除某条面试邀约。"""
     with _connect() as conn:
         conn.execute("DELETE FROM interviews WHERE id = ?", (interview_id,))
+
+
+# ---- chat archives（聊天归档） -----------------------------------------
+
+def add_chat_archive(user_id: int, folder: str, title: str, content: str) -> int:
+    """把一条 AI 回复归档到指定档案夹。"""
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO chat_archives (user_id, folder, title, content) VALUES (?, ?, ?, ?)",
+            (user_id, folder, title, content),
+        )
+        return cur.lastrowid
+
+
+def get_chat_archives(user_id: int, folder: str | None = None) -> list[dict]:
+    """读取聊天归档。folder 为空时返回全部。"""
+    with _connect() as conn:
+        if folder:
+            rows = conn.execute(
+                "SELECT * FROM chat_archives WHERE user_id = ? AND folder = ? "
+                "ORDER BY created_at DESC, id DESC",
+                (user_id, folder),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM chat_archives WHERE user_id = ? ORDER BY created_at DESC, id DESC",
+                (user_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def delete_chat_archive(archive_id: int) -> None:
+    """删除一条聊天归档。"""
+    with _connect() as conn:
+        conn.execute("DELETE FROM chat_archives WHERE id = ?", (archive_id,))

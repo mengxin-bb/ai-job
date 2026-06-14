@@ -14,9 +14,12 @@
 import os
 import uuid
 import base64
+import json
+from datetime import date, time
 from urllib.parse import urlencode
 
 import streamlit as st
+import extra_streamlit_components as stx
 
 st.set_page_config(page_title="职来 Careerture", page_icon="🌱", layout="centered")
 
@@ -80,7 +83,7 @@ st.markdown(
       .stApp {
         color: var(--ink);
         background:
-          linear-gradient(rgba(226, 255, 234, 0.18), rgba(226, 255, 234, 0.18)),
+          linear-gradient(rgba(230, 255, 242, 0.48), rgba(230, 255, 242, 0.56)),
           url("__OCEAN_BG__");
         background-size: cover;
         background-position: center top;
@@ -88,7 +91,14 @@ st.markdown(
         min-height: 100vh;
       }
       .stApp::before {
-        content: none;
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        background:
+          linear-gradient(90deg, rgba(245,255,245,0.32), rgba(245,255,245,0.08) 24%, rgba(245,255,245,0.22)),
+          radial-gradient(circle at 50% 18%, rgba(245,255,245,0.38), transparent 34%);
+        z-index: 0;
       }
       .stApp::after {
         content: none;
@@ -97,10 +107,24 @@ st.markdown(
         position: relative;
         z-index: 1;
       }
+      .main .block-container {
+        background: linear-gradient(180deg, rgba(236,255,247,0.2), rgba(236,255,247,0.08));
+      }
+      p, li, label, [data-testid="stMarkdownContainer"] {
+        color: var(--ink) !important;
+        text-shadow: 1px 1px 0 rgba(245, 255, 245, 0.72);
+      }
+      [data-testid="stCaptionContainer"],
+      [data-testid="stCaptionContainer"] p,
+      small {
+        color: #154a75 !important;
+        text-shadow: 1px 1px 0 rgba(245,255,245,0.9);
+        font-weight: 650;
+      }
       h1, h2, h3 {
         font-family: 'Press Start 2P', cursive !important;
         color: var(--wood-dark) !important; line-height: 1.6 !important;
-        text-shadow: 2px 2px 0 rgba(245, 255, 245, 0.86);
+        text-shadow: 2px 2px 0 rgba(245, 255, 245, 0.96), 4px 4px 0 rgba(18, 61, 121, 0.16);
       }
       h1 { font-size: 1.4rem !important; }
       [data-testid="stChatMessage"] {
@@ -184,6 +208,8 @@ st.markdown(
         align-items: center;
         gap: 0.75rem;
         margin: 0.4rem 0 0.8rem;
+        padding: 0.25rem 0.35rem;
+        background: linear-gradient(90deg, rgba(235,255,229,0.72), rgba(235,255,229,0));
       }
       .page-title h1 {
         margin: 0 !important;
@@ -293,6 +319,8 @@ st.markdown(
         display: inline-flex;
         align-items: center;
         gap: 0.45rem;
+        color: var(--ink);
+        text-shadow: 1px 1px 0 rgba(245,255,245,0.86);
       }
       .onboarding-hero {
         border: 4px solid var(--wood-dark);
@@ -358,16 +386,23 @@ st.markdown(
         margin: 0.6rem 0 0.45rem;
       }
       .helper-copy {
-        color: #185a82;
+        color: #123d79;
         font-size: 0.9rem;
         margin: -0.15rem 0 0.55rem;
+        display: inline-block;
+        padding: 0.12rem 0.35rem;
+        background: rgba(245, 255, 245, 0.58);
+        box-decoration-break: clone;
+        -webkit-box-decoration-break: clone;
+        text-shadow: 1px 1px 0 rgba(245,255,245,0.92);
       }
       /* 板块卡片 / 容器边框木框化 */
       [data-testid="stExpander"] details,
       [data-testid="stVerticalBlockBorderWrapper"] {
         border: 3px solid var(--wood) !important; border-radius: 0 !important;
-        background: rgba(235, 255, 229, 0.76) !important;
+        background: rgba(239, 255, 236, 0.86) !important;
         box-shadow: 4px 4px 0 rgba(18, 61, 121, 0.18);
+        backdrop-filter: blur(1.5px);
       }
       /* 主页四大板块卡片等高对齐 */
       .home-card-marker {
@@ -407,7 +442,14 @@ st.markdown(
         margin-bottom: 0 !important;
       }
       img { image-rendering: pixelated; }
-      .disclaimer { text-align: center; color: var(--wood); font-size: 0.8rem; margin-top: 1rem; }
+      .disclaimer {
+        text-align: center;
+        color: #123d79;
+        font-size: 0.8rem;
+        margin-top: 1rem;
+        font-weight: 700;
+        text-shadow: 1px 1px 0 rgba(245,255,245,0.94);
+      }
       @media (max-width: 560px) {
         .brand-title {
           margin-top: 0.25rem;
@@ -426,22 +468,85 @@ st.markdown(
 
 db.init_db()
 
+COOKIE_SESSION_KEY = "careerture_uid"
+COOKIE_PROFILE_KEY = "careerture_profile"
+PROFILE_FIELDS = (
+    "nickname",
+    "school",
+    "grade",
+    "major",
+    "target_industry",
+    "target_position",
+    "target_city",
+)
+
+cookie_manager = stx.CookieManager(key="careerture_cookie_manager")
+
+
+def _safe_cookie_get(key: str) -> str:
+    try:
+        value = cookie_manager.get(key)
+    except Exception:
+        return ""
+    return value or ""
+
+
+def _safe_cookie_set(key: str, value: str) -> None:
+    try:
+        cookie_manager.set(key, value, max_age=60 * 60 * 24 * 365)
+    except Exception:
+        pass
+
+
+def _profile_has_required_info(info) -> bool:
+    if not info:
+        return False
+    return any((info.get(k) or "").strip() for k in PROFILE_FIELDS)
+
+
+def _restore_profile_from_cookie(user_id_to_restore: int) -> None:
+    raw_profile = _safe_cookie_get(COOKIE_PROFILE_KEY)
+    if not raw_profile:
+        return
+    try:
+        profile = json.loads(raw_profile)
+    except (TypeError, json.JSONDecodeError):
+        return
+    if not isinstance(profile, dict) or not _profile_has_required_info(profile):
+        return
+    current = db.get_user(user_id_to_restore) or {}
+    if _profile_has_required_info(current):
+        return
+    db.update_user_profile(
+        user_id_to_restore,
+        profile.get("nickname") or "",
+        profile.get("school") or "",
+        profile.get("grade") or "",
+        profile.get("major") or "",
+        profile.get("target_industry") or "",
+        profile.get("target_position") or "",
+        profile.get("target_city") or "",
+    )
+
 if "session_id" not in st.session_state:
-    sid = st.query_params.get("uid")
+    sid = st.query_params.get("uid") or _safe_cookie_get(COOKIE_SESSION_KEY)
     if not sid:
         sid = str(uuid.uuid4())
-        st.query_params["uid"] = sid
+    st.query_params["uid"] = sid
+    _safe_cookie_set(COOKIE_SESSION_KEY, sid)
     st.session_state.session_id = sid
 if "user_id" not in st.session_state:
     st.session_state.user_id = db.get_or_create_user(st.session_state.session_id)
+    _restore_profile_from_cookie(st.session_state.user_id)
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "feedback_given" not in st.session_state:
     st.session_state.feedback_given = set()
+current_user = db.get_user(st.session_state.user_id) or {}
 if "view" not in st.session_state:
-    st.session_state.view = "onboarding"
+    st.session_state.view = "home" if _profile_has_required_info(current_user) else "onboarding"
 if "onboarding_done" not in st.session_state:
-    st.session_state.onboarding_done = False
+    st.session_state.onboarding_done = _profile_has_required_info(current_user)
 if "deepseek_token" not in st.session_state:
     st.session_state.deepseek_token = (
         st.query_params.get("deepseek_token")
@@ -453,21 +558,26 @@ user_id = st.session_state.user_id
 
 
 def get_deepseek_token() -> str:
-    return (st.session_state.get("deepseek_token") or "").strip()
+    return (
+        st.session_state.get("deepseek_token")
+        or os.getenv("DEEPSEEK_API_KEY")
+        or ""
+    ).strip()
 
 
 def render_token_config() -> None:
     with st.sidebar:
         st.markdown("### DeepSeek Token")
+        has_cloud_token = bool(os.getenv("DEEPSEEK_API_KEY"))
         token = st.text_input(
             "访问 Token",
             value=st.session_state.get("deepseek_token", ""),
             type="password",
             placeholder="sk-...",
-            help="仅保存在当前浏览器会话中，不写入数据库。",
+            help="可选。留空时会使用部署端已配置的 Token；手动填写仅保存在当前浏览器会话中。",
         )
         st.session_state.deepseek_token = token.strip()
-        if get_deepseek_token():
+        if token.strip():
             st.success("Token 已配置")
             params = {
                 "uid": st.session_state.session_id,
@@ -476,6 +586,9 @@ def render_token_config() -> None:
             share_url = "http://127.0.0.1:8501/?" + urlencode(params)
             st.caption("带 Token 的分享链接会暴露密钥，只适合短期私下测试。")
             st.code(share_url, language="text")
+        elif has_cloud_token:
+            st.success("已使用部署端 Token，朋友可直接体验")
+            st.caption("如需换成自己的 Token，也可以在这里填写。")
         else:
             st.info("也可以用 URL 参数 deepseek_token 自动配置。")
 
@@ -515,6 +628,16 @@ def save_profile_from_form(
         target_city.strip(),
     )
     st.session_state.onboarding_done = True
+    profile = {
+        "nickname": nickname.strip(),
+        "school": school.strip(),
+        "grade": grade.strip(),
+        "major": major.strip(),
+        "target_industry": target_industry.strip(),
+        "target_position": target_position.strip(),
+        "target_city": target_city.strip(),
+    }
+    _safe_cookie_set(COOKIE_PROFILE_KEY, json.dumps(profile, ensure_ascii=False))
 
 
 def pixel_icon(kind: str, label: str = "") -> str:
@@ -533,6 +656,50 @@ def render_page_title(title: str, icon: str) -> None:
 
 
 APP_STATUS = ["已投递", "笔试中", "面试中", "已 Offer", "未通过"]
+ARCHIVE_FOLDERS = ["求职策略", "简历优化", "面试准备", "岗位信息", "行动计划", "灵感收藏"]
+
+
+def archive_chat_message(message_key: str, content: str) -> None:
+    """渲染单条 AI 回复的归档控件。"""
+    with st.expander("← 左滑归档 / 收进档案", expanded=False):
+        c1, c2 = st.columns([2, 3])
+        folder = c1.selectbox(
+            "归档到",
+            ARCHIVE_FOLDERS,
+            key=f"archive_folder_{message_key}",
+            label_visibility="collapsed",
+        )
+        title = c2.text_input(
+            "标题",
+            value=(content.strip().splitlines()[0][:24] if content.strip() else "AI 建议"),
+            key=f"archive_title_{message_key}",
+            label_visibility="collapsed",
+        )
+        if st.button("收进档案", key=f"archive_btn_{message_key}", use_container_width=True):
+            db.add_chat_archive(user_id, folder, title.strip() or folder, content)
+            st.success(f"已归档到「{folder}」")
+
+
+def render_archive_drawer() -> None:
+    archives = db.get_chat_archives(user_id)
+    with st.expander(f"我的档案库（{len(archives)}）", expanded=False):
+        if not archives:
+            st.caption("还没有归档内容。看到有用的 AI 建议时，可以收进这里。")
+            return
+        folder_filter = st.selectbox(
+            "查看档案",
+            ["全部"] + ARCHIVE_FOLDERS,
+            key="archive_filter",
+        )
+        shown = archives if folder_filter == "全部" else [a for a in archives if a["folder"] == folder_filter]
+        for item in shown:
+            with st.container(border=True):
+                h1, h2 = st.columns([6, 1])
+                h1.markdown(f"**{item['title'] or item['folder']}**  \n<small>{item['folder']} · {item['created_at']}</small>", unsafe_allow_html=True)
+                if h2.button("删除", key=f"del_archive_{item['id']}"):
+                    db.delete_chat_archive(item["id"])
+                    st.rerun()
+                st.markdown(item["content"])
 
 
 # ====================================================================
@@ -600,6 +767,7 @@ def render_onboarding() -> None:
 
     st.markdown("<div class='helper-copy'>想先体验也可以直接跳过，稍后再上传简历或补资料。</div>", unsafe_allow_html=True)
     if st.button("暂时跳过，直接进入求职陪聊", use_container_width=True):
+        _safe_cookie_set(COOKIE_SESSION_KEY, st.session_state.session_id)
         st.session_state.onboarding_done = True
         go("chat")
 
@@ -722,12 +890,15 @@ def render_chat() -> None:
             st.session_state.messages = []
             st.rerun()
 
+    render_archive_drawer()
+
     # 历史消息 + 反馈按钮
-    for msg in st.session_state.messages:
+    for idx, msg in enumerate(st.session_state.messages):
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             cid = msg.get("conversation_id")
             if msg["role"] == "assistant" and cid is not None:
+                archive_chat_message(f"history_{cid}_{idx}", msg["content"])
                 if cid in st.session_state.feedback_given:
                     st.caption("感谢反馈 🙏")
                 else:
@@ -774,6 +945,7 @@ def render_chat() -> None:
                 todo = "\n".join(f"- ☐ {t}" for t in result["action_items"])
                 content += "\n\n**📌 建议的行动项**\n" + todo + "\n\n*（已加入上方待办，可勾选完成）*"
             st.markdown(content)
+            archive_chat_message(f"draft_{len(st.session_state.messages)}", content)
 
         assistant_msg = {"role": "assistant", "content": content}
         if not result["advice"].startswith("⚠️"):
@@ -907,6 +1079,46 @@ def render_applications() -> None:
 # 板块 4：面试邀约
 # ====================================================================
 
+def render_interview_calendar(interviews: list[dict]) -> None:
+    scheduled = [iv for iv in interviews if iv.get("interview_date")]
+    unscheduled = [iv for iv in interviews if not iv.get("interview_date")]
+
+    st.markdown("### 面试日历看板")
+    if not scheduled and not unscheduled:
+        st.caption("添加面试邀约后，这里会自动生成日历看板。")
+        return
+
+    grouped: dict[str, list[dict]] = {}
+    for iv in scheduled:
+        grouped.setdefault(iv["interview_date"], []).append(iv)
+
+    if grouped:
+        for day in sorted(grouped):
+            try:
+                day_label = date.fromisoformat(day).strftime("%m月%d日")
+            except ValueError:
+                day_label = day
+            with st.container(border=True):
+                st.markdown(f"**{day_label}**")
+                for iv in sorted(grouped[day], key=lambda item: item.get("interview_clock") or ""):
+                    clock = iv.get("interview_clock") or "时间待定"
+                    st.markdown(
+                        f"<div class='pixel-label'><strong>{clock}</strong> "
+                        f"{iv['company']} · {iv.get('position') or '—'} · {iv.get('method') or ''}</div>",
+                        unsafe_allow_html=True,
+                    )
+                    if iv.get("note"):
+                        st.caption(iv["note"])
+
+    if unscheduled:
+        with st.expander(f"待确认时间（{len(unscheduled)}）", expanded=False):
+            for iv in unscheduled:
+                st.markdown(
+                    f"**{iv['company']}** · {iv.get('position') or '—'}  \n"
+                    f"{iv.get('interview_time') or '时间待定'} · {iv.get('method') or ''}"
+                )
+
+
 def render_interviews() -> None:
     back_button()
     render_page_title("面试邀约", "calendar")
@@ -915,30 +1127,41 @@ def render_interviews() -> None:
         i1, i2 = st.columns(2)
         iv_company = i1.text_input("公司")
         iv_position = i2.text_input("岗位")
-        i3, i4 = st.columns(2)
-        iv_time = i3.text_input("面试时间", placeholder="如：3月15日 14:00")
-        iv_method = i4.selectbox("形式", ["线上", "现场", "电话"])
+        i3, i4, i5 = st.columns(3)
+        iv_date = i3.date_input("面试日期")
+        iv_clock = i4.time_input("面试时间", value=time(9, 0))
+        iv_method = i5.selectbox("形式", ["线上", "现场", "电话"])
         iv_note = st.text_input("备注", placeholder="如：二面 / 腾讯会议 / 带简历")
         if st.form_submit_button("➕ 添加面试邀约"):
             if iv_company.strip():
+                iv_time_text = f"{iv_date.isoformat()} {iv_clock.strftime('%H:%M')}"
                 db.add_interview(
                     user_id, iv_company.strip(), iv_position.strip(),
-                    iv_time.strip(), iv_method, iv_note.strip(),
+                    iv_time_text, iv_method, iv_note.strip(),
+                    interview_date=iv_date.isoformat(),
+                    interview_clock=iv_clock.strftime("%H:%M"),
                 )
                 st.rerun()
             else:
                 st.warning("请至少填写公司名称。")
 
     interviews = db.get_interviews(user_id)
+    render_interview_calendar(interviews)
+    st.divider()
     if not interviews:
         st.caption("还没有面试邀约 —— 加油，邀约会来的！")
     else:
         st.caption(f"📌 共 {len(interviews)} 个面试邀约")
         for iv in interviews:
             c1, c2 = st.columns([6, 1])
+            time_label = (
+                f"{iv.get('interview_date') or ''} {iv.get('interview_clock') or ''}".strip()
+                or iv["interview_time"]
+                or "时间待定"
+            )
             line = (
                 f"**{iv['company']}** · {iv['position'] or '—'}  \n"
-                f"🕒 {iv['interview_time'] or '时间待定'} · {iv['method'] or ''}"
+                f"🕒 {time_label} · {iv['method'] or ''}"
             )
             if iv["note"]:
                 line += f"  \n📝 {iv['note']}"

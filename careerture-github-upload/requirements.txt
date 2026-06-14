@@ -7,5 +7,6 @@ python-dotenv>=1.0.1   # 从 .env 读取 API key
 pandas>=2.2.0          # 可选：数据处理 / 历史记录导出
 pypdf>=3.0.0           # 简历解析：提取 PDF 文本
 python-docx>=1.0.0     # 简历解析：提取 DOCX 文本
+extra-streamlit-components>=0.1.71  # 浏览器 cookie：记住用户身份和基础信息
 
 # 注：sqlite3 是 Python 标准库内置模块，无需安装、无需写进本文件。
