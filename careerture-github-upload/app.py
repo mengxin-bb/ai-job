@@ -3,7 +3,7 @@
 
 结构：主页四大板块（求职陪聊 / 简历诊断 / 投递记录 / 面试邀约），
 每个板块点进去是一个独立全屏页面，左上角有「返回主页」。
-个人资料不再手填，从上传的简历中自动读取。
+个人资料可从简历读取，也可在「我的资料」里随时维护。
 
 运行：
     cp .env.example .env      # 填入 DEEPSEEK_API_KEY
@@ -15,8 +15,9 @@ import os
 import uuid
 import base64
 import json
+import csv
+import io
 from datetime import date, time
-from urllib.parse import urlencode
 
 import streamlit as st
 import extra_streamlit_components as stx
@@ -35,7 +36,13 @@ except Exception:
     pass
 
 from utils import db, resume
-from utils.api_client import analyze_resume, chat_turn, extract_resume_profile, generate_job_market_snapshot
+from utils.api_client import (
+    analyze_resume,
+    chat_turn,
+    extract_resume_profile,
+    generate_job_market_snapshot,
+    rewrite_resume_bullets,
+)
 
 # ---- 像素风样式（星露谷调性）-----------------------------------------
 
@@ -89,6 +96,10 @@ st.markdown(
         background-position: center top;
         background-attachment: fixed;
         min-height: 100vh;
+        overflow-x: hidden;
+      }
+      html, body, [data-testid="stAppViewContainer"], .main {
+        overflow-x: hidden !important;
       }
       .stApp::before {
         content: "";
@@ -109,6 +120,9 @@ st.markdown(
       }
       .main .block-container {
         background: linear-gradient(180deg, rgba(236,255,247,0.2), rgba(236,255,247,0.08));
+        max-width: 920px;
+        padding-left: max(1rem, env(safe-area-inset-left)) !important;
+        padding-right: max(1rem, env(safe-area-inset-right)) !important;
       }
       p, li, label, [data-testid="stMarkdownContainer"] {
         color: var(--ink) !important;
@@ -185,7 +199,7 @@ st.markdown(
       }
       .brand-title h1 {
         margin: 0 !important;
-        font-size: clamp(2.05rem, 8vw, 3.6rem) !important;
+        font-size: clamp(1.85rem, 7vw, 3.2rem) !important;
         line-height: 1.08 !important;
         letter-spacing: 0 !important;
         color: #0f4f8a !important;
@@ -451,9 +465,19 @@ st.markdown(
         text-shadow: 1px 1px 0 rgba(245,255,245,0.94);
       }
       @media (max-width: 560px) {
+        .main .block-container {
+          padding-left: 0.85rem !important;
+          padding-right: 0.85rem !important;
+        }
         .brand-title {
           margin-top: 0.25rem;
           margin-bottom: 0.65rem;
+        }
+        .brand-title h1 {
+          font-size: 2rem !important;
+        }
+        h1 {
+          font-size: 1.05rem !important;
         }
         .step-strip {
           grid-template-columns: 1fr;
@@ -479,6 +503,7 @@ PROFILE_FIELDS = (
     "target_position",
     "target_city",
 )
+PROFILE_REQUIRED_FIELDS = ("nickname", "school", "grade", "major", "target_industry", "target_position", "target_city")
 
 cookie_manager = stx.CookieManager(key="careerture_cookie_manager")
 
@@ -501,7 +526,7 @@ def _safe_cookie_set(key: str, value: str) -> None:
 def _profile_has_required_info(info) -> bool:
     if not info:
         return False
-    return any((info.get(k) or "").strip() for k in PROFILE_FIELDS)
+    return all((info.get(k) or "").strip() for k in PROFILE_REQUIRED_FIELDS)
 
 
 def _restore_profile_from_cookie(user_id_to_restore: int) -> None:
@@ -544,15 +569,13 @@ if "feedback_given" not in st.session_state:
     st.session_state.feedback_given = set()
 current_user = db.get_user(st.session_state.user_id) or {}
 if "view" not in st.session_state:
-    st.session_state.view = "home" if _profile_has_required_info(current_user) else "onboarding"
+    st.session_state.view = "home"
+elif st.session_state.view == "onboarding":
+    st.session_state.view = "home"
 if "onboarding_done" not in st.session_state:
-    st.session_state.onboarding_done = _profile_has_required_info(current_user)
+    st.session_state.onboarding_done = True
 if "deepseek_token" not in st.session_state:
-    st.session_state.deepseek_token = (
-        st.query_params.get("deepseek_token")
-        or st.query_params.get("token")
-        or ""
-    )
+    st.session_state.deepseek_token = ""
 
 user_id = st.session_state.user_id
 
@@ -565,8 +588,53 @@ def get_deepseek_token() -> str:
     ).strip()
 
 
+def rows_to_csv(rows: list[dict]) -> bytes:
+    """把查询结果转成带 BOM 的 CSV，方便 Excel 直接打开中文。"""
+    if not rows:
+        return "\ufeff".encode("utf-8")
+    output = io.StringIO()
+    fieldnames = list(rows[0].keys())
+    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(rows)
+    return ("\ufeff" + output.getvalue()).encode("utf-8")
+
+
+def render_backup_panel() -> None:
+    with st.sidebar:
+        st.markdown("### 数据备份")
+        st.caption("Streamlit Cloud 重启后，本地 SQLite 可能清空。认真使用前建议定期导出 CSV。")
+        st.download_button(
+            "导出投递记录 CSV",
+            data=rows_to_csv(db.get_all_applications()),
+            file_name="careerture_applications.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+        st.download_button(
+            "导出待办 CSV",
+            data=rows_to_csv(db.get_user_tasks(user_id)),
+            file_name="careerture_tasks.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+        st.download_button(
+            "导出面试 CSV",
+            data=rows_to_csv(db.get_all_interviews()),
+            file_name="careerture_interviews.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+        st.caption("长期稳定版本建议接 Supabase / Postgres，避免云端临时文件丢失。")
+
+
 def render_token_config() -> None:
     with st.sidebar:
+        if st.button("我的资料", use_container_width=True):
+            st.session_state.view = "profile"
+            st.rerun()
+        st.caption("修改学校、目标城市、目标岗位后，陪聊和岗位快照会更准确。")
+        st.divider()
         st.markdown("### DeepSeek Token")
         has_cloud_token = bool(os.getenv("DEEPSEEK_API_KEY"))
         token = st.text_input(
@@ -579,21 +647,16 @@ def render_token_config() -> None:
         st.session_state.deepseek_token = token.strip()
         if token.strip():
             st.success("Token 已配置")
-            params = {
-                "uid": st.session_state.session_id,
-                "deepseek_token": get_deepseek_token(),
-            }
-            share_url = "http://127.0.0.1:8501/?" + urlencode(params)
-            st.caption("带 Token 的分享链接会暴露密钥，只适合短期私下测试。")
-            st.code(share_url, language="text")
+            st.caption("此 Token 仅保存在当前浏览器会话，不会写入数据库。")
         elif has_cloud_token:
             st.success("已使用部署端 Token，朋友可直接体验")
             st.caption("如需换成自己的 Token，也可以在这里填写。")
         else:
-            st.info("也可以用 URL 参数 deepseek_token 自动配置。")
+            st.info("未检测到部署端 Token。请在 Streamlit Secrets 配置，或仅自己测试时手动填写。")
 
 
 render_token_config()
+render_backup_panel()
 
 
 def go(view: str) -> None:
@@ -656,6 +719,7 @@ def render_page_title(title: str, icon: str) -> None:
 
 
 APP_STATUS = ["已投递", "笔试中", "面试中", "已 Offer", "未通过"]
+APP_CHANNELS = ["官网", "Boss直聘", "猎聘", "牛客", "校园招聘会", "内推", "公众号", "其他"]
 ARCHIVE_FOLDERS = ["求职策略", "简历优化", "面试准备", "岗位信息", "行动计划", "灵感收藏"]
 
 
@@ -700,6 +764,72 @@ def render_archive_drawer() -> None:
                     db.delete_chat_archive(item["id"])
                     st.rerun()
                 st.markdown(item["content"])
+
+
+def _format_interview_day(day: str) -> str:
+    try:
+        return date.fromisoformat(day).strftime("%m月%d日")
+    except (TypeError, ValueError):
+        return day or "待定"
+
+
+def render_calendar_board(compact: bool = True) -> None:
+    interviews = db.get_interviews(user_id)
+    scheduled = [iv for iv in interviews if iv.get("interview_date")]
+    unscheduled = [iv for iv in interviews if not iv.get("interview_date")]
+
+    title = "面试日历挂表" if compact else "日程安排"
+    st.markdown(f"### {title}")
+    if not interviews:
+        with st.container(border=True):
+            st.caption("还没有面试邀约。添加后会在这里自动形成日历挂表。")
+        return
+
+    grouped = {}
+    for iv in scheduled:
+        grouped.setdefault(iv["interview_date"], []).append(iv)
+
+    next_items = []
+    for day in sorted(grouped):
+        for iv in sorted(grouped[day], key=lambda item: item.get("interview_clock") or ""):
+            next_items.append(iv)
+
+    if compact:
+        with st.container(border=True):
+            if next_items:
+                st.markdown("**近期面试**")
+                for iv in next_items[:3]:
+                    clock = iv.get("interview_clock") or "时间待定"
+                    st.markdown(
+                        f"<div class='pixel-label'><strong>{_format_interview_day(iv.get('interview_date'))} {clock}</strong>"
+                        f"｜{iv['company']} · {iv.get('position') or '—'}</div>",
+                        unsafe_allow_html=True,
+                    )
+            if unscheduled:
+                st.caption(f"还有 {len(unscheduled)} 个邀约待确认时间")
+            if st.button("放大查看日程安排", use_container_width=True):
+                go("calendar")
+        return
+
+    if grouped:
+        for day in sorted(grouped):
+            with st.container(border=True):
+                st.markdown(f"**{_format_interview_day(day)}**")
+                for iv in sorted(grouped[day], key=lambda item: item.get("interview_clock") or ""):
+                    clock = iv.get("interview_clock") or "时间待定"
+                    st.markdown(
+                        f"**{clock}**｜{iv['company']} · {iv.get('position') or '—'} · {iv.get('method') or ''}"
+                    )
+                    if iv.get("note"):
+                        st.caption(iv["note"])
+
+    if unscheduled:
+        with st.expander(f"待确认时间（{len(unscheduled)}）", expanded=True):
+            for iv in unscheduled:
+                st.markdown(
+                    f"**{iv['company']}** · {iv.get('position') or '—'}  \n"
+                    f"{iv.get('interview_time') or '时间待定'} · {iv.get('method') or ''}"
+                )
 
 
 # ====================================================================
@@ -781,9 +911,9 @@ def render_onboarding() -> None:
                 st.session_state.job_market_snapshot = generate_job_market_snapshot(
                     db.get_user(user_id),
                     api_key=get_deepseek_token(),
-                )
+        )
         if uploaded is None:
-            go("chat")
+            go("home")
 
         try:
             resume_text = resume.extract_text(uploaded.name, uploaded.getvalue())
@@ -830,6 +960,11 @@ def render_home() -> None:
         unsafe_allow_html=True,
     )
     st.caption("温暖、理性、有行动力的求职陪伴 —— 选择一个板块开始")
+    profile_col, _ = st.columns([1, 2])
+    with profile_col:
+        if st.button("我的资料", use_container_width=True):
+            go("profile")
+    render_calendar_board(compact=True)
 
     # 各板块当前数量，做成小提示
     n_app = len(db.get_applications(user_id))
@@ -861,6 +996,74 @@ def render_home() -> None:
 
 
 # ====================================================================
+# 我的资料：主动编辑目标与基础信息
+# ====================================================================
+
+def render_profile() -> None:
+    back_button()
+    render_page_title("我的资料", "task")
+
+    info = db.get_user(user_id) or {}
+    st.caption("这些资料会用于求职陪聊、简历诊断和目标城市岗位快照。之后目标变化，也可以随时回来修改。")
+
+    with st.form("profile_edit_form"):
+        f1, f2 = st.columns(2)
+        nickname = f1.text_input("昵称", value=info.get("nickname") or "")
+        school = f2.text_input("学校", value=info.get("school") or "")
+        f3, f4 = st.columns(2)
+        grade = f3.text_input("年级", value=info.get("grade") or "", placeholder="如：大三 / 研二")
+        major = f4.text_input("专业", value=info.get("major") or "")
+        f5, f6, f7 = st.columns(3)
+        target_industry = f5.text_input(
+            "目标行业",
+            value=info.get("target_industry") or "",
+            placeholder="如：互联网 / 金融 / 快消",
+        )
+        target_position = f6.text_input(
+            "目标岗位",
+            value=info.get("target_position") or "",
+            placeholder="如：产品经理 / 数据分析",
+        )
+        target_city = f7.text_input(
+            "目标城市",
+            value=info.get("target_city") or "",
+            placeholder="如：上海 / 杭州",
+        )
+        submitted = st.form_submit_button("保存资料", use_container_width=True)
+
+    if submitted:
+        save_profile_from_form(
+            nickname,
+            school,
+            grade,
+            major,
+            target_industry,
+            target_position,
+            target_city,
+        )
+        st.success("已保存。之后打开网站会继续记住这些资料。")
+        if target_industry.strip() and target_position.strip() and target_city.strip():
+            with st.spinner("正在更新目标城市岗位快照…"):
+                st.session_state.job_market_snapshot = generate_job_market_snapshot(
+                    db.get_user(user_id),
+                    api_key=get_deepseek_token(),
+                )
+
+    if st.session_state.get("job_market_snapshot"):
+        with st.expander("目标城市岗位快照", expanded=True):
+            st.caption("岗位快照为 AI 生成的参考示例，不代表实时招聘数据或真实在招岗位；建议结合招聘网站/JD 原文核对。")
+            st.markdown(st.session_state.job_market_snapshot)
+    else:
+        st.info("补全目标城市、目标行业和目标岗位后，我会为你生成岗位 JD 示例与薪资参考。")
+
+    c1, c2 = st.columns(2)
+    if c1.button("进入求职陪聊", use_container_width=True):
+        go("chat")
+    if c2.button("回到四大板块", use_container_width=True):
+        go("home")
+
+
+# ====================================================================
 # 板块 1：求职陪聊
 # ====================================================================
 
@@ -870,6 +1073,7 @@ def render_chat() -> None:
 
     if st.session_state.get("job_market_snapshot"):
         with st.expander("目标城市岗位快照", expanded=True):
+            st.caption("岗位快照为 AI 生成的参考示例，不代表实时招聘数据或真实在招岗位；建议结合招聘网站/JD 原文核对。")
             st.markdown(st.session_state.job_market_snapshot)
 
     # 待办 + 新建对话
@@ -990,6 +1194,8 @@ def render_resume() -> None:
         except resume.ResumeParseError as e:
             st.error(str(e))
         else:
+            st.session_state.resume_text = resume_text
+            st.session_state.resume_rewrite = None
             # 1) 从简历提取个人信息并写库（仅覆盖非空字段，保留已有）
             with st.spinner("正在读取你的个人信息…"):
                 extracted = extract_resume_profile(resume_text, api_key=get_deepseek_token())
@@ -1017,10 +1223,27 @@ def render_resume() -> None:
     if st.session_state.get("resume_report"):
         st.divider()
         st.markdown(st.session_state.resume_report)
+        if st.button("生成可复制改写版", use_container_width=True):
+            resume_text = st.session_state.get("resume_text")
+            if not resume_text:
+                st.warning("请先重新上传简历，再生成改写版。")
+            else:
+                with st.spinner("正在生成 STAR 改写和可复制 bullet points…"):
+                    st.session_state.resume_rewrite = rewrite_resume_bullets(
+                        resume_text,
+                        user_info=db.get_user(user_id),
+                        api_key=get_deepseek_token(),
+                    )
+                st.rerun()
+        if st.session_state.get("resume_rewrite"):
+            with st.expander("可复制改写版", expanded=True):
+                st.markdown(st.session_state.resume_rewrite)
+                st.code(st.session_state.resume_rewrite, language="markdown")
         if st.button("进入求职陪聊", use_container_width=True):
             go("chat")
         if st.button("清除诊断结果"):
             st.session_state.resume_report = None
+            st.session_state.resume_rewrite = None
             st.rerun()
 
 
@@ -1040,11 +1263,20 @@ def render_applications() -> None:
         season = a3.selectbox("批次", ["秋招", "春招"])
         status = a4.selectbox("状态", APP_STATUS)
         applied = a5.date_input("投递日期")
-        if st.form_submit_button("📩 投进邮箱（添加记录）"):
+        a6, a7, a8 = st.columns(3)
+        channel = a6.selectbox("投递渠道", APP_CHANNELS)
+        referrer = a7.text_input("内推人", placeholder="没有可留空")
+        next_step = a8.text_input("下一步提醒", placeholder="如：3天后跟进")
+        jd_link = st.text_input("JD 链接", placeholder="https://...")
+        note = st.text_area("备注", placeholder="岗位要求、准备方向、沟通记录等", height=90)
+        fail_reason = st.text_input("失败原因", placeholder="未通过时可记录原因，便于复盘")
+        if st.form_submit_button("📩 加入 CRM（添加记录）"):
             if company.strip():
                 db.add_application(
                     user_id, company.strip(), position.strip(),
                     season, status, applied.isoformat(),
+                    channel, jd_link.strip(), referrer.strip(),
+                    next_step.strip(), note.strip(), fail_reason.strip(),
                 )
                 st.rerun()
             else:
@@ -1054,25 +1286,108 @@ def render_applications() -> None:
     if not apps:
         st.caption("📭 邮箱还空着 —— 投了第一家就来记一笔吧！")
     else:
-        st.caption(f"📬 邮箱里共有 {len(apps)} 封投递")
+        status_counts = {s: 0 for s in APP_STATUS}
+        for item in apps:
+            if item.get("status") in status_counts:
+                status_counts[item["status"]] += 1
+        st.caption(f"📬 CRM 里共有 {len(apps)} 条投递")
+        stat_cols = st.columns(len(APP_STATUS))
+        for col, status_name in zip(stat_cols, APP_STATUS):
+            col.metric(status_name, status_counts[status_name])
         for a in apps:
-            c1, c2, c3 = st.columns([3, 2, 1])
-            c1.markdown(
-                f"**{a['company']}** · {a['position'] or '—'}  \n"
-                f"<small>{a['season']} · 投于 {a['applied_date'] or '—'}</small>",
-                unsafe_allow_html=True,
-            )
-            idx = APP_STATUS.index(a["status"]) if a["status"] in APP_STATUS else 0
-            new_status = c2.selectbox(
-                "状态", APP_STATUS, index=idx,
-                key=f"app_status_{a['id']}", label_visibility="collapsed",
-            )
-            if new_status != a["status"]:
-                db.update_application_status(a["id"], new_status)
-                st.rerun()
-            if c3.button("🗑", key=f"del_app_{a['id']}"):
-                db.delete_application(a["id"])
-                st.rerun()
+            with st.container(border=True):
+                c1, c2, c3 = st.columns([3, 2, 1])
+                c1.markdown(
+                    f"**{a['company']}** · {a['position'] or '—'}  \n"
+                    f"<small>{a['season']} · {a.get('channel') or '渠道未填'} · 投于 {a['applied_date'] or '—'}</small>",
+                    unsafe_allow_html=True,
+                )
+                idx = APP_STATUS.index(a["status"]) if a["status"] in APP_STATUS else 0
+                new_status = c2.selectbox(
+                    "状态", APP_STATUS, index=idx,
+                    key=f"app_status_{a['id']}", label_visibility="collapsed",
+                )
+                if new_status != a["status"]:
+                    db.update_application_status(a["id"], new_status)
+                    st.rerun()
+                if c3.button("删除", key=f"del_app_{a['id']}"):
+                    db.delete_application(a["id"])
+                    st.rerun()
+
+                detail_bits = []
+                if a.get("next_step"):
+                    detail_bits.append(f"下一步：{a['next_step']}")
+                if a.get("referrer"):
+                    detail_bits.append(f"内推人：{a['referrer']}")
+                if a.get("fail_reason"):
+                    detail_bits.append(f"失败原因：{a['fail_reason']}")
+                if detail_bits:
+                    st.caption("｜".join(detail_bits))
+                if a.get("jd_link"):
+                    st.markdown(f"[查看 JD 链接]({a['jd_link']})")
+                if a.get("note"):
+                    st.markdown(f"备注：{a['note']}")
+
+                with st.expander("编辑详情", expanded=False):
+                    with st.form(f"edit_app_form_{a['id']}"):
+                        e1, e2 = st.columns(2)
+                        edit_company = e1.text_input("公司", value=a["company"], key=f"edit_company_{a['id']}")
+                        edit_position = e2.text_input("岗位", value=a.get("position") or "", key=f"edit_position_{a['id']}")
+                        e3, e4, e5 = st.columns(3)
+                        edit_season = e3.selectbox(
+                            "批次",
+                            ["秋招", "春招"],
+                            index=0 if a.get("season") != "春招" else 1,
+                            key=f"edit_season_{a['id']}",
+                        )
+                        edit_status = e4.selectbox(
+                            "状态",
+                            APP_STATUS,
+                            index=APP_STATUS.index(a["status"]) if a.get("status") in APP_STATUS else 0,
+                            key=f"edit_status_{a['id']}",
+                        )
+                        try:
+                            applied_value = date.fromisoformat(a.get("applied_date") or "")
+                        except ValueError:
+                            applied_value = date.today()
+                        edit_applied = e5.date_input("投递日期", value=applied_value, key=f"edit_applied_{a['id']}")
+                        e6, e7, e8 = st.columns(3)
+                        channel_value = a.get("channel") or "官网"
+                        edit_channel = e6.selectbox(
+                            "投递渠道",
+                            APP_CHANNELS,
+                            index=APP_CHANNELS.index(channel_value) if channel_value in APP_CHANNELS else 0,
+                            key=f"edit_channel_{a['id']}",
+                        )
+                        edit_referrer = e7.text_input("内推人", value=a.get("referrer") or "", key=f"edit_referrer_{a['id']}")
+                        edit_next_step = e8.text_input("下一步提醒", value=a.get("next_step") or "", key=f"edit_next_{a['id']}")
+                        edit_jd_link = st.text_input("JD 链接", value=a.get("jd_link") or "", key=f"edit_jd_{a['id']}")
+                        edit_note = st.text_area("备注", value=a.get("note") or "", height=90, key=f"edit_note_{a['id']}")
+                        edit_fail_reason = st.text_input(
+                            "失败原因",
+                            value=a.get("fail_reason") or "",
+                            key=f"edit_fail_{a['id']}",
+                        )
+                        if st.form_submit_button("保存修改", use_container_width=True):
+                            if not edit_company.strip():
+                                st.warning("公司名称不能为空。")
+                            else:
+                                db.update_application_detail(
+                                    a["id"],
+                                    edit_company.strip(),
+                                    edit_position.strip(),
+                                    edit_season,
+                                    edit_status,
+                                    edit_applied.isoformat(),
+                                    edit_channel,
+                                    edit_jd_link.strip(),
+                                    edit_referrer.strip(),
+                                    edit_next_step.strip(),
+                                    edit_note.strip(),
+                                    edit_fail_reason.strip(),
+                                )
+                                st.success("已保存")
+                                st.rerun()
 
 
 # ====================================================================
@@ -1146,7 +1461,7 @@ def render_interviews() -> None:
                 st.warning("请至少填写公司名称。")
 
     interviews = db.get_interviews(user_id)
-    render_interview_calendar(interviews)
+    render_calendar_board(compact=False)
     st.divider()
     if not interviews:
         st.caption("还没有面试邀约 —— 加油，邀约会来的！")
@@ -1171,6 +1486,14 @@ def render_interviews() -> None:
                 st.rerun()
 
 
+def render_calendar() -> None:
+    back_button()
+    render_page_title("日程安排", "calendar")
+    render_calendar_board(compact=False)
+    if st.button("添加新的面试邀约", use_container_width=True):
+        go("interviews")
+
+
 # ====================================================================
 # 路由
 # ====================================================================
@@ -1182,5 +1505,7 @@ VIEWS = {
     "resume": render_resume,
     "applications": render_applications,
     "interviews": render_interviews,
+    "calendar": render_calendar,
+    "profile": render_profile,
 }
 VIEWS.get(st.session_state.view, render_home)()

@@ -81,6 +81,12 @@ def init_db() -> None:
                 season        TEXT,        -- 秋招 / 春招
                 status        TEXT,        -- 已投递 / 笔试中 / 面试中 / 已 Offer / 未通过
                 applied_date  TEXT,        -- 投递日期（ISO 文本）
+                channel       TEXT,        -- 投递渠道
+                jd_link       TEXT,        -- JD 链接
+                referrer      TEXT,        -- 内推人
+                next_step     TEXT,        -- 下一步提醒
+                note          TEXT,        -- 备注
+                fail_reason   TEXT,        -- 失败原因
                 created_at    TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
             );
@@ -120,6 +126,13 @@ def init_db() -> None:
             conn.execute("ALTER TABLE users ADD COLUMN school TEXT")
         if "target_city" not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN target_city TEXT")
+        application_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(applications)").fetchall()
+        }
+        for name in ("channel", "jd_link", "referrer", "next_step", "note", "fail_reason"):
+            if name not in application_columns:
+                conn.execute(f"ALTER TABLE applications ADD COLUMN {name} TEXT")
         interview_columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(interviews)").fetchall()
@@ -280,14 +293,42 @@ def save_feedback(user_id: int, conversation_id: int | None, is_helpful: bool) -
 # ---- applications（投递记录） -----------------------------------------
 
 def add_application(
-    user_id: int, company: str, position: str, season: str, status: str, applied_date: str
+    user_id: int,
+    company: str,
+    position: str,
+    season: str,
+    status: str,
+    applied_date: str,
+    channel: str = "",
+    jd_link: str = "",
+    referrer: str = "",
+    next_step: str = "",
+    note: str = "",
+    fail_reason: str = "",
 ) -> None:
     """新增一条投递记录。"""
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO applications (user_id, company, position, season, status, applied_date) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (user_id, company, position, season, status, applied_date),
+            """
+            INSERT INTO applications
+                (user_id, company, position, season, status, applied_date,
+                 channel, jd_link, referrer, next_step, note, fail_reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                company,
+                position,
+                season,
+                status,
+                applied_date,
+                channel,
+                jd_link,
+                referrer,
+                next_step,
+                note,
+                fail_reason,
+            ),
         )
 
 
@@ -302,10 +343,68 @@ def get_applications(user_id: int) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def get_all_applications() -> list[dict]:
+    """返回全部投递记录，用于管理员/单用户 Demo 导出备份。"""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM applications ORDER BY applied_date DESC, id DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def update_application_status(app_id: int, status: str) -> None:
     """更新某条投递记录的状态。"""
     with _connect() as conn:
         conn.execute("UPDATE applications SET status = ? WHERE id = ?", (status, app_id))
+
+
+def update_application_detail(
+    app_id: int,
+    company: str,
+    position: str,
+    season: str,
+    status: str,
+    applied_date: str,
+    channel: str = "",
+    jd_link: str = "",
+    referrer: str = "",
+    next_step: str = "",
+    note: str = "",
+    fail_reason: str = "",
+) -> None:
+    """更新完整投递记录。"""
+    with _connect() as conn:
+        conn.execute(
+            """
+            UPDATE applications
+               SET company = ?,
+                   position = ?,
+                   season = ?,
+                   status = ?,
+                   applied_date = ?,
+                   channel = ?,
+                   jd_link = ?,
+                   referrer = ?,
+                   next_step = ?,
+                   note = ?,
+                   fail_reason = ?
+             WHERE id = ?
+            """,
+            (
+                company,
+                position,
+                season,
+                status,
+                applied_date,
+                channel,
+                jd_link,
+                referrer,
+                next_step,
+                note,
+                fail_reason,
+                app_id,
+            ),
+        )
 
 
 def delete_application(app_id: int) -> None:
@@ -343,6 +442,16 @@ def get_interviews(user_id: int) -> list[dict]:
             "SELECT * FROM interviews WHERE user_id = ? "
             "ORDER BY COALESCE(interview_date, '') ASC, COALESCE(interview_clock, '') ASC, id DESC",
             (user_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_all_interviews() -> list[dict]:
+    """返回全部面试邀约，用于管理员/单用户 Demo 导出备份。"""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM interviews "
+            "ORDER BY COALESCE(interview_date, '') ASC, COALESCE(interview_clock, '') ASC, id DESC"
         ).fetchall()
         return [dict(r) for r in rows]
 

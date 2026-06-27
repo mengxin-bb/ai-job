@@ -1,15 +1,16 @@
 # 职来 Careerture
 
 一个面向在校大学生的 **AI 求职陪伴** 应用：温暖、理性、有行动力。
-基于 **Streamlit + Claude API** 构建，能记住你的资料、自动总结对话、把建议拆成可勾选的行动项，并在你下次回来时提醒未完成的任务。
+基于 **Streamlit + DeepSeek API** 构建，支持求职陪聊、简历诊断、投递记录、面试邀约和日程看板等场景。
 
 ## ✨ 功能
 
 - **对话陪伴**：以"职来 Careerture"人设给出具体、可执行的求职建议
 - **记忆**：用 SQLite 保存用户资料、对话摘要、待办任务
 - **行动项闭环**：AI 回复时同步产出行动项 → 自动入库 → 侧边栏 checkbox 勾选完成
-- **首次引导**：第一次打开自动引导填写年级 / 专业 / 意向行业·岗位
-- **返回提醒**：再次打开时提示"上次有 X 个任务还没完成"
+- **简历诊断**：上传 PDF / DOCX / TXT 简历，生成针对性优化建议
+- **面试日历**：记录面试邀约，并生成可放大的日程看板
+- **内容归档**：将 AI 回复按求职策略、简历优化、面试准备等类别收藏
 
 ## 🗂️ 项目结构
 
@@ -20,8 +21,9 @@ ai-job-companion/
 ├── .env.example           # 环境变量示例
 ├── .gitignore
 └── utils/
-    ├── api_client.py      # Claude API 封装（结构化输出：建议 + 行动项 + 摘要）
-    └── db.py              # SQLite 持久化（users / conversations / tasks）
+    ├── api_client.py      # DeepSeek API 封装（建议 + 行动项 + 摘要）
+    ├── db.py              # SQLite 持久化（用户 / 对话 / 任务 / 面试 / 归档）
+    └── resume.py          # 简历文本解析
 ```
 
 ## 🔑 环境变量
@@ -44,7 +46,7 @@ pip install -r requirements.txt
 
 # 2) 配置 key
 cp .env.example .env
-# 编辑 .env，填入你的 ANTHROPIC_API_KEY
+# 编辑 .env，填入你的 DEEPSEEK_API_KEY
 
 # 3) 启动
 streamlit run app.py

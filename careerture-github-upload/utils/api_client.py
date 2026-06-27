@@ -1,9 +1,9 @@
 """
-DeepSeek API 客户端 —— 校招 Copilot。
+DeepSeek API 客户端 —— 职来 Careerture。
 
 DeepSeek 提供 OpenAI 兼容接口，因此用 openai 库 + base_url 接入。
-对外暴露两个函数，签名与返回结构保持稳定，app.py / test_local.py 无需改动：
-  - call_claude(messages, user_info=None) -> str            纯文本回复
+对外暴露核心函数，签名与返回结构保持稳定，app.py / test_local.py 无需改动：
+  - call_claude(messages, user_info=None) -> str            纯文本回复（历史命名，实际调用 DeepSeek）
   - chat_turn(messages, user_info, existing_tasks) -> dict  结构化：advice/action_items/summary
 
 环境变量：
@@ -48,17 +48,17 @@ MEMORY_INSTRUCTIONS = """\
 - summary：字符串，本轮对话摘要，100 字以内，格式为「用户年级+专业+核心困惑+给出的建议要点」"""
 
 
-# 进程内复用 client；前端 token 和环境变量 token 分开缓存。
+# 进程内复用 client；手动输入 token 和环境变量 token 分开缓存。
 _clients: dict[tuple[str, str], OpenAI] = {}
 
 
 def _resolve_api_key(api_key: str | None = None) -> str:
-    """优先使用前端传入的 token；没有则回退到环境变量。"""
+    """优先使用当前会话传入的 token；没有则回退到部署端环境变量。"""
     return (api_key or os.getenv("DEEPSEEK_API_KEY") or "").strip()
 
 
 def _missing_key_message() -> str:
-    return "⚠️ 还没配置 DeepSeek Token。请在页面左侧填写，或通过 URL 参数 deepseek_token 传入。"
+    return "⚠️ 还没配置 DeepSeek Token。请在部署端 Streamlit Secrets 配置，或在页面左侧手动填写。"
 
 
 def _get_client(api_key: str | None = None) -> OpenAI:
@@ -217,6 +217,19 @@ RESUME_SYSTEM_PROMPT = """\
 """
 
 
+RESUME_REWRITE_SYSTEM_PROMPT = """\
+你是“职来 Careerture”的简历改写教练，面向校招/实习投递。
+请把用户简历中最值得优化的 2-3 段经历，改成可以直接复制进简历的内容。
+要求：
+- 先列出「适配目标岗位的改写方向」
+- 每段经历按 STAR 拆解：Situation/Task/Action/Result
+- 给出 2-4 条可直接复制的中文 bullet points，尽量包含动作、工具、规模、结果、指标
+- 如果原文缺少量化信息，给出「可补充指标清单」，不要编造具体数字
+- 输出要实用、克制，避免夸张包装
+- 用 Markdown 排版
+"""
+
+
 def analyze_resume(resume_text: str, user_info: dict | None = None, api_key: str | None = None) -> str:
     """
     分析简历文本，返回 Markdown 格式的诊断报告（痛点 + 修改建议）。
@@ -234,6 +247,49 @@ def analyze_resume(resume_text: str, user_info: dict | None = None, api_key: str
             model=MODEL,
             max_tokens=2000,  # 诊断报告较长，给足空间
             temperature=TEMPERATURE,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_msg},
+            ],
+        )
+        return resp.choices[0].message.content or "⚠️ 未生成内容，请重试。"
+    except AuthenticationError:
+        return "⚠️ DeepSeek Token 无效或已过期，请检查页面左侧填写的访问 Token。"
+    except RateLimitError:
+        return "⚠️ 请求太频繁，触发了限流。请稍等几秒再试。"
+    except APIConnectionError:
+        return "⚠️ 网络连接出错，请检查网络后重试。"
+    except APIStatusError as e:
+        return f"⚠️ 调用 DeepSeek 失败（HTTP {e.status_code}）。请稍后重试。"
+    except Exception as e:  # noqa: BLE001
+        return f"⚠️ 出现未知错误：{e}"
+
+
+def rewrite_resume_bullets(
+    resume_text: str,
+    user_info: dict | None = None,
+    api_key: str | None = None,
+) -> str:
+    """
+    生成可复制的简历改写版：STAR 拆解 + 量化建议 + bullet points。
+
+    失败时返回 ⚠️ 开头的友好提示。
+    """
+    if not _resolve_api_key(api_key):
+        return _missing_key_message()
+
+    system = RESUME_REWRITE_SYSTEM_PROMPT + _profile_block(user_info)
+    user_msg = (
+        "以下是我的简历内容。请挑选最需要改写、也最能服务目标岗位的经历，"
+        "输出 STAR 改写和可直接复制的 bullet points：\n\n"
+        f"{resume_text}"
+    )
+
+    try:
+        resp = _get_client(api_key).chat.completions.create(
+            model=MODEL,
+            max_tokens=2200,
+            temperature=0.45,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user_msg},

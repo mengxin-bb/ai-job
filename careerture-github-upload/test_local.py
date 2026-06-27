@@ -1,5 +1,5 @@
 """
-本地冒烟测试：对每个测试用例模拟一轮对话，检查 Claude API 是否正常返回，
+本地冒烟测试：对每个测试用例模拟一轮对话，检查 DeepSeek API 是否正常返回，
 并对回复做宽松的关键词命中统计。
 
 用法:
@@ -78,7 +78,7 @@ def run_case(idx: int, case: dict) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="校招 Copilot 本地冒烟测试")
+    parser = argparse.ArgumentParser(description="职来 Careerture 本地冒烟测试")
     parser.add_argument("--case", type=int, default=None, help="只跑指定下标的用例（0 基）")
     args = parser.parse_args()
 
